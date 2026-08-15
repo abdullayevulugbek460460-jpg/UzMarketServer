@@ -407,10 +407,17 @@ def register():
 
             conn.commit()
 
-    except Exception:
+    except Exception as e:
+        print("SELLER REGISTER ERROR:", repr(e))
+
+        if getattr(e, "sqlstate", None) == "23505":
+            return jsonify({
+                "error": "Bu telefon raqami allaqachon ro'yxatdan o'tgan"
+            }), 409
+
         return jsonify({
-            "error": "Bu telefon raqami allaqachon ro'yxatdan o'tgan"
-        }), 409
+            "error": "Sotuvchi ro'yxatdan o'tishda server xatosi"
+        }), 500
 
     token = make_token(user_id)
 
