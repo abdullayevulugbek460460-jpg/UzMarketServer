@@ -412,11 +412,13 @@ def register():
 
         if getattr(e, "sqlstate", None) == "23505":
             return jsonify({
-                "error": "Bu telefon raqami allaqachon ro'yxatdan o'tgan"
+                "error": "Bu telefon raqami allaqachon ro'yxatdan o'tgan",
+                "detail": str(e)
             }), 409
 
         return jsonify({
-            "error": "Sotuvchi ro'yxatdan o'tishda server xatosi"
+            "error": "Sotuvchi ro'yxatdan o'tishda server xatosi",
+            "detail": str(e)
         }), 500
 
     token = make_token(user_id)
