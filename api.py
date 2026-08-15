@@ -426,6 +426,68 @@ def register():
 
 
 # =========================================================
+# SELLER REGISTER
+# =========================================================
+
+@app.route("/auth/seller/register", methods=["POST"])
+def seller_register():
+
+    data = request.get_json(silent=True) or {}
+
+    name = str(data.get("name", "")).strip()
+    phone = str(data.get("phone", "")).strip()
+    password = str(data.get("password", ""))
+
+    if not name or not phone or not password:
+        return jsonify({
+            "error": "name, phone va password kerak"
+        }), 400
+
+    if len(password) < 4:
+        return jsonify({
+            "error": "Parol kamida 4 ta belgidan iborat bo'lishi kerak"
+        }), 400
+
+    password_hash = generate_password_hash(password)
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    INSERT INTO uzmarket.users
+                    (name, phone, password_hash, role, seller_status)
+                    VALUES (%s, %s, %s, 'seller', 'PENDING')
+                    RETURNING id
+                """, (
+                    name,
+                    phone,
+                    password_hash
+                ))
+
+                user_id = cur.fetchone()[0]
+
+            conn.commit()
+
+    except Exception:
+        return jsonify({
+            "error": "Bu telefon raqami allaqachon ro'yxatdan o'tgan"
+        }), 409
+
+    return jsonify({
+        "success": True,
+        "user": {
+            "id": user_id,
+            "name": name,
+            "phone": phone,
+            "role": "seller",
+            "seller_status": "PENDING"
+        },
+        "message": "Sotuvchi arizasi yuborildi. Admin tasdig'i kutilmoqda."
+    }), 201
+
+
+# =========================================================
 # LOGIN
 # =========================================================
 
@@ -880,6 +942,125 @@ def admin_login():
             "username": admin[1]
         },
         "token": token
+    })
+
+
+# =========================================================
+# ADMIN SELLERS - LIST
+# =========================================================
+
+@app.route("/admin/sellers", methods=["GET"])
+@admin_required
+def admin_get_sellers():
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                SELECT
+                    id,
+                    name,
+                    phone,
+                    role,
+                    seller_status,
+                    created_at
+                FROM uzmarket.users
+                WHERE role = 'seller'
+                ORDER BY id DESC
+            """)
+
+            rows = cur.fetchall()
+
+    return jsonify([
+        {
+            "id": r[0],
+            "name": r[1],
+            "phone": r[2],
+            "role": r[3],
+            "seller_status": r[4],
+            "created_at": r[5].isoformat() if r[5] else None
+        }
+        for r in rows
+    ])
+
+
+# =========================================================
+# ADMIN SELLER - APPROVE
+# =========================================================
+
+@app.route("/admin/sellers/<int:user_id>/approve", methods=["POST"])
+@admin_required
+def admin_approve_seller(user_id):
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                UPDATE uzmarket.users
+                SET seller_status = 'APPROVED'
+                WHERE id = %s
+                  AND role = 'seller'
+                RETURNING id, name, phone
+            """, (user_id,))
+
+            seller = cur.fetchone()
+
+        conn.commit()
+
+    if not seller:
+        return jsonify({
+            "error": "Sotuvchi topilmadi"
+        }), 404
+
+    return jsonify({
+        "success": True,
+        "message": "Sotuvchi tasdiqlandi",
+        "seller": {
+            "id": seller[0],
+            "name": seller[1],
+            "phone": seller[2],
+            "seller_status": "APPROVED"
+        }
+    })
+
+
+# =========================================================
+# ADMIN SELLER - REJECT
+# =========================================================
+
+@app.route("/admin/sellers/<int:user_id>/reject", methods=["POST"])
+@admin_required
+def admin_reject_seller(user_id):
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                UPDATE uzmarket.users
+                SET seller_status = 'REJECTED'
+                WHERE id = %s
+                  AND role = 'seller'
+                RETURNING id, name, phone
+            """, (user_id,))
+
+            seller = cur.fetchone()
+
+        conn.commit()
+
+    if not seller:
+        return jsonify({
+            "error": "Sotuvchi topilmadi"
+        }), 404
+
+    return jsonify({
+        "success": True,
+        "message": "Sotuvchi rad etildi",
+        "seller": {
+            "id": seller[0],
+            "name": seller[1],
+            "phone": seller[2],
+            "seller_status": "REJECTED"
+        }
     })
 
 

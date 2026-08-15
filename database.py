@@ -53,6 +53,20 @@ def init_db():
             """)
 
             # =====================================================
+            # SELLER FIELDS
+            # =====================================================
+
+            cur.execute("""
+                ALTER TABLE uzmarket.users
+                ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'customer'
+            """)
+
+            cur.execute("""
+                ALTER TABLE uzmarket.users
+                ADD COLUMN IF NOT EXISTS seller_status TEXT DEFAULT NULL
+            """)
+
+            # =====================================================
             # CATEGORIES
             # =====================================================
 
