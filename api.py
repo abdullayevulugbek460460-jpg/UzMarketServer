@@ -613,7 +613,6 @@ def me():
 @app.route("/orders", methods=["POST"])
 @auth_required
 def create_order():
-
     data = request.get_json(silent=True) or {}
 
     customer_name = str(
@@ -653,10 +652,63 @@ def create_order():
             "error": "total 0 dan katta bo'lishi kerak"
         }), 400
 
-    order_code = generate_order_code()
+    # products ichidan product_id larni topamiz.
+    # Checkout hozir JSON obyektlarini \n bilan yuboryapti.
+    import json
+
+    product_ids = []
+
+    try:
+        if isinstance(products, list):
+            for item in products:
+                if isinstance(item, dict) and item.get("product_id"):
+                    product_ids.append(int(item["product_id"]))
+
+        elif isinstance(products, str):
+            for line in products.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    item = json.loads(line)
+                    if item.get("product_id"):
+                        product_ids.append(int(item["product_id"]))
+                except Exception:
+                    pass
+    except Exception:
+        product_ids = []
+
+    product_ids = list(dict.fromkeys(product_ids))
+
+    order_seller_id = None
 
     with get_connection() as conn:
         with conn.cursor() as cur:
+
+            # Mahsulotlarning seller_id larini aniqlaymiz
+            if product_ids:
+                cur.execute("""
+                    SELECT DISTINCT seller_id
+                    FROM uzmarket.products
+                    WHERE id = ANY(%s)
+                      AND seller_id IS NOT NULL
+                """, (product_ids,))
+
+                seller_rows = cur.fetchall()
+
+                seller_ids = [
+                    int(row[0])
+                    for row in seller_rows
+                    if row[0] is not None
+                ]
+
+                # Barcha mahsulotlar bitta sellerga tegishli bo'lsa
+                # order seller_id shu seller bo'ladi.
+                if len(seller_ids) == 1:
+                    order_seller_id = seller_ids[0]
+
+            order_code = generate_order_code()
 
             cur.execute("""
                 INSERT INTO uzmarket.orders
@@ -667,13 +719,14 @@ def create_order():
                     phone,
                     address,
                     products,
-                    total
+                    total,
+                    seller_id
                 )
                 VALUES
-                (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING
-                    id,
-                    created_at
+                (
+                    %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                RETURNING id, created_at
             """, (
                 order_code,
                 request.user_id,
@@ -681,7 +734,8 @@ def create_order():
                 phone,
                 address,
                 str(products),
-                total
+                total,
+                order_seller_id
             ))
 
             order_id, created_at = cur.fetchone()
@@ -698,11 +752,12 @@ def create_order():
             "address": address,
             "products": products,
             "total": total,
+            "seller_id": order_seller_id,
             "status": "Jarayonda",
-            "created_at": created_at
+            "created_at": created_at.isoformat()
+                if created_at else None
         }
     }), 201
-
 
 # =========================================================
 # MY ORDERS
@@ -1615,6 +1670,105 @@ def seller_required(f):
 
     return decorated
 
+
+
+@app.route("/seller/orders", methods=["GET"])
+@seller_required
+def seller_get_orders():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    id,
+                    order_code,
+                    user_id,
+                    customer_name,
+                    phone,
+                    address,
+                    products,
+                    total,
+                    status,
+                    created_at
+                FROM uzmarket.orders
+                WHERE seller_id = %s
+                ORDER BY id DESC
+            """, (request.seller_id,))
+
+            rows = cur.fetchall()
+
+    return jsonify([
+        {
+            "id": r[0],
+            "order_code": r[1],
+            "user_id": r[2],
+            "customer_name": r[3],
+            "phone": r[4],
+            "address": r[5],
+            "products": r[6],
+            "total": r[7],
+            "status": r[8],
+            "created_at": r[9].isoformat()
+                if r[9] else None
+        }
+        for r in rows
+    ])
+
+# =========================================================
+# SELLER ORDERS STATUS
+# =========================================================
+
+@app.route("/seller/orders/<int:order_id>/status", methods=["POST"])
+@seller_required
+def seller_update_order_status(order_id):
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status", "")).strip()
+
+    allowed_statuses = [
+        "Jarayonda",
+        "Qabul qilindi",
+        "Tayyorlanmoqda",
+        "Yuborildi",
+        "Yetkazildi",
+        "Bekor qilindi"
+    ]
+
+    if status not in allowed_statuses:
+        return jsonify({
+            "error": "Noto'g'ri status",
+            "allowed": allowed_statuses
+        }), 400
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE uzmarket.orders
+                SET status = %s
+                WHERE id = %s
+                  AND seller_id = %s
+                RETURNING id, order_code, status
+            """, (
+                status,
+                order_id,
+                request.seller_id
+            ))
+
+            order = cur.fetchone()
+
+        conn.commit()
+
+    if not order:
+        return jsonify({
+            "error": "Buyurtma topilmadi"
+        }), 404
+
+    return jsonify({
+        "success": True,
+        "order": {
+            "id": order[0],
+            "order_code": order[1],
+            "status": order[2]
+        }
+    })
 
 @app.route("/seller/products", methods=["GET"])
 @seller_required

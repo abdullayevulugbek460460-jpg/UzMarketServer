@@ -167,9 +167,19 @@ def init_db():
                     address TEXT NOT NULL,
                     products TEXT NOT NULL,
                     total INTEGER NOT NULL,
+                    seller_id BIGINT REFERENCES uzmarket.users(id),
                     status TEXT DEFAULT 'Jarayonda',
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
+            """)
+
+            # =====================================================
+            # ORDERS SELLER MIGRATION
+            # =====================================================
+            cur.execute("""
+                ALTER TABLE uzmarket.orders
+                ADD COLUMN IF NOT EXISTS seller_id
+                BIGINT REFERENCES uzmarket.users(id)
             """)
 
             # =====================================================
