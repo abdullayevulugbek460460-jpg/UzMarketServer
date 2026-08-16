@@ -854,6 +854,103 @@ def get_order(order_id):
     })
 
 
+
+# =========================================================
+# SELLER STATISTICS
+# =========================================================
+@app.route("/seller/statistics", methods=["GET"])
+@seller_required
+def seller_statistics():
+    period = str(request.args.get("period", "day")).strip().lower()
+
+    periods = {
+        "day": ("Bugun", "CURRENT_DATE"),
+        "week": ("Bu hafta", "DATE_TRUNC('week', NOW())"),
+        "month": ("Bu oy", "DATE_TRUNC('month', NOW())"),
+        "year": ("Bu yil", "DATE_TRUNC('year', NOW())")
+    }
+
+    if period not in periods:
+        return jsonify({
+            "error": "Noto'g'ri period",
+            "allowed": ["day", "week", "month", "year"]
+        }), 400
+
+    period_name, date_condition = periods[period]
+
+    # Faqat yakunlangan buyurtmalar statistikaga kiradi.
+    if period == "day":
+        condition = "created_at >= CURRENT_DATE"
+    else:
+        condition = f"created_at >= {date_condition}"
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute(f"""
+                SELECT
+                    COALESCE(SUM(total), 0),
+                    COUNT(*),
+                    COALESCE(AVG(total), 0)
+                FROM uzmarket.orders
+                WHERE seller_id = %s
+                  AND status = 'Yakunlandi'
+                  AND {condition}
+            """, (request.seller_id,))
+
+            row = cur.fetchone()
+
+            total_sales = int(row[0] or 0)
+            orders_count = int(row[1] or 0)
+            average_order = int(row[2] or 0)
+
+            # products JSON ichidan sotilgan dona sonini hisoblaymiz
+            cur.execute(f"""
+                SELECT products
+                FROM uzmarket.orders
+                WHERE seller_id = %s
+                  AND status = 'Yakunlandi'
+                  AND {condition}
+            """, (request.seller_id,))
+
+            items_sold = 0
+
+            import json
+
+            for row in cur.fetchall():
+                try:
+                    products_data = row[0]
+
+                    if isinstance(products_data, str):
+                        products_data = json.loads(products_data)
+
+                    if isinstance(products_data, dict):
+                        products_data = [products_data]
+
+                    if isinstance(products_data, list):
+                        for item in products_data:
+                            if isinstance(item, dict):
+                                try:
+                                    items_sold += int(
+                                        item.get("quantity", 0)
+                                    )
+                                except (TypeError, ValueError):
+                                    pass
+
+                except Exception:
+                    pass
+
+    return jsonify({
+        "success": True,
+        "period": period,
+        "period_name": period_name,
+        "total_sales": total_sales,
+        "orders_count": orders_count,
+        "items_sold": items_sold,
+        "average_order": average_order
+    })
+
+
 # =========================================================
 # RUN
 # =========================================================
