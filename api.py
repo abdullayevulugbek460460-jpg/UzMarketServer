@@ -708,6 +708,16 @@ def create_order():
                 if len(seller_ids) == 1:
                     order_seller_id = seller_ids[0]
 
+            latitude = request.json.get("latitude", 0.0)
+            longitude = request.json.get("longitude", 0.0)
+
+            try:
+                latitude = float(latitude or 0.0)
+                longitude = float(longitude or 0.0)
+            except (TypeError, ValueError):
+                latitude = 0.0
+                longitude = 0.0
+
             order_code = generate_order_code()
 
             cur.execute("""
@@ -720,11 +730,13 @@ def create_order():
                     address,
                     products,
                     total,
-                    seller_id
+                    seller_id,
+                    latitude,
+                    longitude
                 )
                 VALUES
                 (
-                    %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 RETURNING id, created_at
             """, (
@@ -735,7 +747,9 @@ def create_order():
                 address,
                 str(products),
                 total,
-                order_seller_id
+                order_seller_id,
+                latitude,
+                longitude
             ))
 
             order_id, created_at = cur.fetchone()
@@ -780,7 +794,9 @@ def get_orders():
                     products,
                     total,
                     status,
-                    created_at
+                    created_at,
+                    latitude,
+                    longitude
                 FROM uzmarket.orders
                 WHERE user_id = %s
                 ORDER BY id DESC
@@ -1767,7 +1783,9 @@ def seller_get_orders():
                     products,
                     total,
                     status,
-                    created_at
+                    created_at,
+                    latitude,
+                    longitude
                 FROM uzmarket.orders
                 WHERE seller_id = %s
                 ORDER BY id DESC
@@ -1787,7 +1805,9 @@ def seller_get_orders():
             "total": r[7],
             "status": r[8],
             "created_at": r[9].isoformat()
-                if r[9] else None
+                if r[9] else None,
+            "latitude": r[10],
+            "longitude": r[11]
         }
         for r in rows
     ])
@@ -2210,6 +2230,1169 @@ def seller_delete_product(product_id):
 # =========================================================
 # RUN
 # =========================================================
+
+
+
+
+# =========================================================
+# FOOD DELIVERY
+# =========================================================
+
+@app.route("/food/restaurants", methods=["GET"])
+def food_restaurants():
+    try:
+        city = request.args.get("city", "").strip()
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                if city:
+                    cur.execute("""
+                        SELECT
+                            id, name, phone, address, city,
+                            description, logo, delivery_price,
+                            min_order, is_open
+                        FROM uzmarket.food_restaurants
+                        WHERE approved = TRUE
+                          AND active = TRUE
+                          AND city = %s
+                        ORDER BY is_open DESC, name
+                    """, (city,))
+                else:
+                    cur.execute("""
+                        SELECT
+                            id, name, phone, address, city,
+                            description, logo, delivery_price,
+                            min_order, is_open
+                        FROM uzmarket.food_restaurants
+                        WHERE approved = TRUE
+                          AND active = TRUE
+                        ORDER BY is_open DESC, name
+                    """)
+
+                rows = cur.fetchall()
+
+        restaurants = []
+
+        for r in rows:
+            restaurants.append({
+                "id": r[0],
+                "name": r[1],
+                "phone": r[2],
+                "address": r[3],
+                "city": r[4],
+                "description": r[5],
+                "logo": r[6],
+                "delivery_price": r[7],
+                "min_order": r[8],
+                "is_open": r[9]
+            })
+
+        return jsonify({
+            "success": True,
+            "restaurants": restaurants
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/food/restaurants/<int:restaurant_id>", methods=["GET"])
+def food_restaurant_detail(restaurant_id):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        id, name, phone, address, city,
+                        description, logo, delivery_price,
+                        min_order, is_open
+                    FROM uzmarket.food_restaurants
+                    WHERE id = %s
+                      AND approved = TRUE
+                      AND active = TRUE
+                """, (restaurant_id,))
+
+                r = cur.fetchone()
+
+        if not r:
+            return jsonify({
+                "success": False,
+                "message": "Restoran topilmadi"
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "restaurant": {
+                "id": r[0],
+                "name": r[1],
+                "phone": r[2],
+                "address": r[3],
+                "city": r[4],
+                "description": r[5],
+                "logo": r[6],
+                "delivery_price": r[7],
+                "min_order": r[8],
+                "is_open": r[9]
+            }
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/food/restaurants/<int:restaurant_id>/menu", methods=["GET"])
+def food_restaurant_menu(restaurant_id):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    SELECT id, name, emoji
+                    FROM uzmarket.food_categories
+                    WHERE restaurant_id = %s
+                      AND active = TRUE
+                    ORDER BY id
+                """, (restaurant_id,))
+
+                categories = cur.fetchall()
+
+                cur.execute("""
+                    SELECT
+                        m.id,
+                        m.category_id,
+                        m.name,
+                        m.description,
+                        m.price,
+                        m.image,
+                        m.available
+                    FROM uzmarket.food_menu m
+                    WHERE m.restaurant_id = %s
+                    ORDER BY m.category_id, m.id
+                """, (restaurant_id,))
+
+                menu_rows = cur.fetchall()
+
+        category_list = []
+
+        for c in categories:
+            category_list.append({
+                "id": c[0],
+                "name": c[1],
+                "emoji": c[2],
+                "items": []
+            })
+
+        category_map = {c["id"]: c for c in category_list}
+
+        uncategorized = []
+
+        for m in menu_rows:
+            item = {
+                "id": m[0],
+                "category_id": m[1],
+                "name": m[2],
+                "description": m[3],
+                "price": m[4],
+                "image": m[5],
+                "available": m[6]
+            }
+
+            if m[1] in category_map:
+                category_map[m[1]]["items"].append(item)
+            else:
+                uncategorized.append(item)
+
+        if uncategorized:
+            category_list.append({
+                "id": None,
+                "name": "Boshqa",
+                "emoji": "🍽️",
+                "items": uncategorized
+            })
+
+        return jsonify({
+            "success": True,
+            "restaurant_id": restaurant_id,
+            "categories": category_list
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+# =========================================================
+# FOOD RESTAURANT OWNER
+# =========================================================
+
+@app.route("/food/restaurants", methods=["POST"])
+@auth_required
+def food_create_restaurant():
+    try:
+        data = request.get_json(silent=True) or {}
+
+        name = str(data.get("name", "")).strip()
+        phone = str(data.get("phone", "")).strip()
+        address = str(data.get("address", "")).strip()
+        city = str(data.get("city", "")).strip()
+        description = str(data.get("description", "")).strip()
+        logo = str(data.get("logo", "")).strip()
+
+        delivery_price = int(data.get("delivery_price", 0))
+        min_order = int(data.get("min_order", 0))
+
+        if not name:
+            return jsonify({
+                "success": False,
+                "message": "Restoran nomi kerak"
+            }), 400
+
+        if not phone:
+            return jsonify({
+                "success": False,
+                "message": "Telefon raqam kerak"
+            }), 400
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    SELECT id
+                    FROM uzmarket.food_restaurants
+                    WHERE owner_id = %s
+                      AND active = TRUE
+                    LIMIT 1
+                """, (request.user_id,))
+
+                existing = cur.fetchone()
+
+                if existing:
+                    return jsonify({
+                        "success": False,
+                        "message": "Sizda allaqachon restoran mavjud",
+                        "restaurant_id": existing[0]
+                    }), 409
+
+                cur.execute("""
+                    INSERT INTO uzmarket.food_restaurants
+                    (
+                        owner_id,
+                        name,
+                        phone,
+                        address,
+                        city,
+                        description,
+                        logo,
+                        delivery_price,
+                        min_order,
+                        approved,
+                        active
+                    )
+                    VALUES
+                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,FALSE,TRUE)
+                    RETURNING id
+                """, (
+                    request.user_id,
+                    name,
+                    phone,
+                    address,
+                    city,
+                    description,
+                    logo,
+                    delivery_price,
+                    min_order
+                ))
+
+                restaurant_id = cur.fetchone()[0]
+
+                conn.commit()
+
+        return jsonify({
+            "success": True,
+            "message": "Restoran arizasi yuborildi. Admin tasdig'i kutilmoqda.",
+            "restaurant_id": restaurant_id
+        }), 201
+
+    except ValueError:
+        return jsonify({
+            "success": False,
+            "message": "Narx maydonlari raqam bo'lishi kerak"
+        }), 400
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/food/categories", methods=["POST"])
+@auth_required
+def food_create_category():
+    try:
+        data = request.get_json(silent=True) or {}
+
+        name = str(data.get("name", "")).strip()
+        emoji = str(data.get("emoji", "🍽️")).strip()
+        restaurant_id = int(data.get("restaurant_id"))
+
+        if not name:
+            return jsonify({
+                "success": False,
+                "message": "Kategoriya nomi kerak"
+            }), 400
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    SELECT id
+                    FROM uzmarket.food_restaurants
+                    WHERE id = %s
+                      AND owner_id = %s
+                      AND active = TRUE
+                """, (restaurant_id, request.user_id))
+
+                restaurant = cur.fetchone()
+
+                if not restaurant:
+                    return jsonify({
+                        "success": False,
+                        "message": "Restoran topilmadi yoki sizga tegishli emas"
+                    }), 403
+
+                cur.execute("""
+                    INSERT INTO uzmarket.food_categories
+                    (restaurant_id, name, emoji)
+                    VALUES (%s,%s,%s)
+                    RETURNING id
+                """, (restaurant_id, name, emoji))
+
+                category_id = cur.fetchone()[0]
+                conn.commit()
+
+        return jsonify({
+            "success": True,
+            "category_id": category_id
+        }), 201
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/food/menu", methods=["POST"])
+@auth_required
+def food_create_menu_item():
+    try:
+        data = request.get_json(silent=True) or {}
+
+        restaurant_id = int(data.get("restaurant_id"))
+        category_id = data.get("category_id")
+        if category_id is not None:
+            category_id = int(category_id)
+
+        name = str(data.get("name", "")).strip()
+        description = str(data.get("description", "")).strip()
+        price = int(data.get("price", 0))
+        image = str(data.get("image", "")).strip()
+
+        if not name:
+            return jsonify({
+                "success": False,
+                "message": "Taom nomi kerak"
+            }), 400
+
+        if price <= 0:
+            return jsonify({
+                "success": False,
+                "message": "Taom narxi 0 dan katta bo'lishi kerak"
+            }), 400
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    SELECT id
+                    FROM uzmarket.food_restaurants
+                    WHERE id = %s
+                      AND owner_id = %s
+                      AND active = TRUE
+                """, (restaurant_id, request.user_id))
+
+                if not cur.fetchone():
+                    return jsonify({
+                        "success": False,
+                        "message": "Restoran topilmadi yoki sizga tegishli emas"
+                    }), 403
+
+                if category_id is not None:
+                    cur.execute("""
+                        SELECT id
+                        FROM uzmarket.food_categories
+                        WHERE id = %s
+                          AND restaurant_id = %s
+                          AND active = TRUE
+                    """, (category_id, restaurant_id))
+
+                    if not cur.fetchone():
+                        return jsonify({
+                            "success": False,
+                            "message": "Kategoriya topilmadi"
+                        }), 400
+
+                cur.execute("""
+                    INSERT INTO uzmarket.food_menu
+                    (
+                        restaurant_id,
+                        category_id,
+                        name,
+                        description,
+                        price,
+                        image
+                    )
+                    VALUES (%s,%s,%s,%s,%s,%s)
+                    RETURNING id
+                """, (
+                    restaurant_id,
+                    category_id,
+                    name,
+                    description,
+                    price,
+                    image
+                ))
+
+                menu_id = cur.fetchone()[0]
+                conn.commit()
+
+        return jsonify({
+            "success": True,
+            "menu_id": menu_id
+        }), 201
+
+    except ValueError:
+        return jsonify({
+            "success": False,
+            "message": "ID va narxlar raqam bo'lishi kerak"
+        }), 400
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+# =========================================================
+# FOOD ORDERS
+# =========================================================
+
+@app.route("/food/orders", methods=["POST"])
+@auth_required
+def food_create_order():
+    try:
+        data = request.get_json(silent=True) or {}
+
+        restaurant_id = int(data.get("restaurant_id"))
+        customer_name = str(data.get("customer_name", "")).strip()
+        phone = str(data.get("phone", "")).strip()
+        address = str(data.get("address", "")).strip()
+
+        latitude = data.get("latitude")
+        longitude = data.get("longitude")
+
+        items = data.get("items", [])
+
+        if not customer_name or not phone or not address:
+            return jsonify({
+                "success": False,
+                "message": "Mijoz ma'lumotlari to'liq emas"
+            }), 400
+
+        if not isinstance(items, list) or not items:
+            return jsonify({
+                "success": False,
+                "message": "Buyurtmada kamida bitta taom bo'lishi kerak"
+            }), 400
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    SELECT
+                        id, delivery_price, min_order, is_open
+                    FROM uzmarket.food_restaurants
+                    WHERE id = %s
+                      AND approved = TRUE
+                      AND active = TRUE
+                """, (restaurant_id,))
+
+                restaurant = cur.fetchone()
+
+                if not restaurant:
+                    return jsonify({
+                        "success": False,
+                        "message": "Restoran mavjud emas yoki tasdiqlanmagan"
+                    }), 404
+
+                if not restaurant[3]:
+                    return jsonify({
+                        "success": False,
+                        "message": "Restoran hozir yopiq"
+                    }), 400
+
+                subtotal = 0
+                valid_items = []
+
+                for item in items:
+                    menu_id = int(item.get("menu_id"))
+                    quantity = int(item.get("quantity", 1))
+
+                    if quantity <= 0 or quantity > 100:
+                        return jsonify({
+                            "success": False,
+                            "message": "Taom miqdori noto'g'ri"
+                        }), 400
+
+                    cur.execute("""
+                        SELECT id, name, price
+                        FROM uzmarket.food_menu
+                        WHERE id = %s
+                          AND restaurant_id = %s
+                          AND available = TRUE
+                    """, (menu_id, restaurant_id))
+
+                    menu = cur.fetchone()
+
+                    if not menu:
+                        return jsonify({
+                            "success": False,
+                            "message": f"Taom topilmadi: {menu_id}"
+                        }), 400
+
+                    line_total = menu[2] * quantity
+                    subtotal += line_total
+
+                    valid_items.append({
+                        "menu_id": menu[0],
+                        "name": menu[1],
+                        "price": menu[2],
+                        "quantity": quantity,
+                        "total": line_total
+                    })
+
+                if subtotal < restaurant[2]:
+                    return jsonify({
+                        "success": False,
+                        "message": f"Minimal buyurtma: {restaurant[2]} so'm"
+                    }), 400
+
+                delivery_price = restaurant[1]
+                total = subtotal + delivery_price
+                order_code = generate_order_code()
+
+                cur.execute("""
+                    INSERT INTO uzmarket.food_orders
+                    (
+                        order_code,
+                        user_id,
+                        restaurant_id,
+                        customer_name,
+                        phone,
+                        address,
+                        latitude,
+                        longitude,
+                        subtotal,
+                        delivery_price,
+                        total,
+                        status
+                    )
+                    VALUES
+                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'Yangi')
+                    RETURNING id
+                """, (
+                    order_code,
+                    request.user_id,
+                    restaurant_id,
+                    customer_name,
+                    phone,
+                    address,
+                    latitude,
+                    longitude,
+                    subtotal,
+                    delivery_price,
+                    total
+                ))
+
+                order_id = cur.fetchone()[0]
+
+                for item in valid_items:
+                    cur.execute("""
+                        INSERT INTO uzmarket.food_order_items
+                        (
+                            order_id,
+                            menu_id,
+                            name,
+                            price,
+                            quantity,
+                            total
+                        )
+                        VALUES (%s,%s,%s,%s,%s,%s)
+                    """, (
+                        order_id,
+                        item["menu_id"],
+                        item["name"],
+                        item["price"],
+                        item["quantity"],
+                        item["total"]
+                    ))
+
+                conn.commit()
+
+        return jsonify({
+            "success": True,
+            "message": "Buyurtma qabul qilindi",
+            "order": {
+                "id": order_id,
+                "order_code": order_code,
+                "restaurant_id": restaurant_id,
+                "subtotal": subtotal,
+                "delivery_price": delivery_price,
+                "total": total,
+                "status": "Yangi"
+            }
+        }), 201
+
+    except ValueError:
+        return jsonify({
+            "success": False,
+            "message": "Buyurtma ma'lumotlarida xato"
+        }), 400
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/food/orders", methods=["GET"])
+@auth_required
+def food_orders():
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        o.id,
+                        o.order_code,
+                        o.restaurant_id,
+                        r.name,
+                        o.customer_name,
+                        o.phone,
+                        o.address,
+                        o.subtotal,
+                        o.delivery_price,
+                        o.total,
+                        o.status,
+                        o.created_at
+                    FROM uzmarket.food_orders o
+                    JOIN uzmarket.food_restaurants r
+                      ON r.id = o.restaurant_id
+                    WHERE o.user_id = %s
+                    ORDER BY o.created_at DESC
+                """, (request.user_id,))
+
+                rows = cur.fetchall()
+
+        result = []
+
+        for r in rows:
+            result.append({
+                "id": r[0],
+                "order_code": r[1],
+                "restaurant_id": r[2],
+                "restaurant_name": r[3],
+                "customer_name": r[4],
+                "phone": r[5],
+                "address": r[6],
+                "subtotal": r[7],
+                "delivery_price": r[8],
+                "total": r[9],
+                "status": r[10],
+                "created_at": r[11].isoformat() if r[11] else None
+            })
+
+        return jsonify({
+            "success": True,
+            "orders": result
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/food/orders/<int:order_id>", methods=["GET"])
+@auth_required
+def food_order_detail(order_id):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    SELECT
+                        o.id,
+                        o.order_code,
+                        o.restaurant_id,
+                        r.name,
+                        o.customer_name,
+                        o.phone,
+                        o.address,
+                        o.latitude,
+                        o.longitude,
+                        o.subtotal,
+                        o.delivery_price,
+                        o.total,
+                        o.status,
+                        o.created_at
+                    FROM uzmarket.food_orders o
+                    JOIN uzmarket.food_restaurants r
+                      ON r.id = o.restaurant_id
+                    WHERE o.id = %s
+                      AND o.user_id = %s
+                """, (order_id, request.user_id))
+
+                order = cur.fetchone()
+
+                if not order:
+                    return jsonify({
+                        "success": False,
+                        "message": "Buyurtma topilmadi"
+                    }), 404
+
+                cur.execute("""
+                    SELECT
+                        menu_id,
+                        name,
+                        price,
+                        quantity,
+                        total
+                    FROM uzmarket.food_order_items
+                    WHERE order_id = %s
+                    ORDER BY id
+                """, (order_id,))
+
+                item_rows = cur.fetchall()
+
+        items = []
+
+        for i in item_rows:
+            items.append({
+                "menu_id": i[0],
+                "name": i[1],
+                "price": i[2],
+                "quantity": i[3],
+                "total": i[4]
+            })
+
+        return jsonify({
+            "success": True,
+            "order": {
+                "id": order[0],
+                "order_code": order[1],
+                "restaurant_id": order[2],
+                "restaurant_name": order[3],
+                "customer_name": order[4],
+                "phone": order[5],
+                "address": order[6],
+                "latitude": order[7],
+                "longitude": order[8],
+                "subtotal": order[9],
+                "delivery_price": order[10],
+                "total": order[11],
+                "status": order[12],
+                "created_at": order[13].isoformat() if order[13] else None,
+                "items": items
+            }
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+# =========================================================
+# FOOD RESTAURANT ORDER MANAGEMENT
+# =========================================================
+
+@app.route("/food/restaurant/orders", methods=["GET"])
+@auth_required
+def food_restaurant_orders():
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    SELECT id
+                    FROM uzmarket.food_restaurants
+                    WHERE owner_id = %s
+                      AND active = TRUE
+                    LIMIT 1
+                """, (request.user_id,))
+
+                restaurant = cur.fetchone()
+
+                if not restaurant:
+                    return jsonify({
+                        "success": False,
+                        "message": "Restoran topilmadi"
+                    }), 404
+
+                restaurant_id = restaurant[0]
+
+                cur.execute("""
+                    SELECT
+                        id,
+                        order_code,
+                        customer_name,
+                        phone,
+                        address,
+                        subtotal,
+                        delivery_price,
+                        total,
+                        status,
+                        created_at
+                    FROM uzmarket.food_orders
+                    WHERE restaurant_id = %s
+                    ORDER BY created_at DESC
+                """, (restaurant_id,))
+
+                rows = cur.fetchall()
+
+        orders = []
+
+        for r in rows:
+            orders.append({
+                "id": r[0],
+                "order_code": r[1],
+                "customer_name": r[2],
+                "phone": r[3],
+                "address": r[4],
+                "subtotal": r[5],
+                "delivery_price": r[6],
+                "total": r[7],
+                "status": r[8],
+                "created_at": r[9].isoformat() if r[9] else None
+            })
+
+        return jsonify({
+            "success": True,
+            "restaurant_id": restaurant_id,
+            "orders": orders
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/food/restaurant/orders/<int:order_id>/status", methods=["POST"])
+@auth_required
+def food_restaurant_order_status(order_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        status = str(data.get("status", "")).strip()
+
+        allowed = [
+            "Yangi",
+            "Qabul qilindi",
+            "Tayyorlanmoqda",
+            "Tayyor",
+            "Yetkazilmoqda",
+            "Yetkazildi",
+            "Bekor qilindi"
+        ]
+
+        if status not in allowed:
+            return jsonify({
+                "success": False,
+                "message": "Noto'g'ri status"
+            }), 400
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    SELECT r.id
+                    FROM uzmarket.food_restaurants r
+                    JOIN uzmarket.food_orders o
+                      ON o.restaurant_id = r.id
+                    WHERE o.id = %s
+                      AND r.owner_id = %s
+                      AND r.active = TRUE
+                """, (order_id, request.user_id))
+
+                if not cur.fetchone():
+                    return jsonify({
+                        "success": False,
+                        "message": "Buyurtma topilmadi yoki sizning restoraningizga tegishli emas"
+                    }), 403
+
+                if status == "Yetkazildi":
+                    cur.execute("""
+                        UPDATE uzmarket.food_orders
+                        SET status = %s,
+                            completed_at = NOW()
+                        WHERE id = %s
+                    """, (status, order_id))
+                else:
+                    cur.execute("""
+                        UPDATE uzmarket.food_orders
+                        SET status = %s
+                        WHERE id = %s
+                    """, (status, order_id))
+
+                conn.commit()
+
+        return jsonify({
+            "success": True,
+            "message": "Buyurtma statusi yangilandi",
+            "status": status
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+
+
+# =========================================================
+# FOOD ADMIN
+# =========================================================
+
+@app.route("/admin/food/restaurants", methods=["GET"])
+@admin_required
+def admin_food_restaurants():
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        r.id,
+                        r.owner_id,
+                        u.name AS owner_name,
+                        u.phone AS owner_phone,
+                        r.name,
+                        r.phone,
+                        r.address,
+                        r.city,
+                        r.description,
+                        r.logo,
+                        r.delivery_price,
+                        r.min_order,
+                        r.is_open,
+                        r.approved,
+                        r.active,
+                        r.created_at
+                    FROM uzmarket.food_restaurants r
+                    LEFT JOIN uzmarket.users u
+                      ON u.id = r.owner_id
+                    ORDER BY r.created_at DESC
+                """)
+
+                rows = cur.fetchall()
+
+        restaurants = []
+
+        for r in rows:
+            restaurants.append({
+                "id": r[0],
+                "owner_id": r[1],
+                "owner_name": r[2],
+                "owner_phone": r[3],
+                "name": r[4],
+                "phone": r[5],
+                "address": r[6],
+                "city": r[7],
+                "description": r[8],
+                "logo": r[9],
+                "delivery_price": r[10],
+                "min_order": r[11],
+                "is_open": r[12],
+                "approved": r[13],
+                "active": r[14],
+                "created_at": r[15].isoformat() if r[15] else None
+            })
+
+        return jsonify({
+            "success": True,
+            "restaurants": restaurants
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/admin/food/restaurants/<int:restaurant_id>/approve", methods=["POST"])
+@admin_required
+def admin_approve_food_restaurant(restaurant_id):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE uzmarket.food_restaurants
+                    SET approved = TRUE,
+                        active = TRUE
+                    WHERE id = %s
+                    RETURNING id, name
+                """, (restaurant_id,))
+
+                restaurant = cur.fetchone()
+
+                if not restaurant:
+                    return jsonify({
+                        "success": False,
+                        "message": "Restoran topilmadi"
+                    }), 404
+
+                conn.commit()
+
+        return jsonify({
+            "success": True,
+            "message": "Restoran tasdiqlandi",
+            "restaurant": {
+                "id": restaurant[0],
+                "name": restaurant[1]
+            }
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/admin/food/restaurants/<int:restaurant_id>/reject", methods=["POST"])
+@admin_required
+def admin_reject_food_restaurant(restaurant_id):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE uzmarket.food_restaurants
+                    SET approved = FALSE,
+                        active = FALSE
+                    WHERE id = %s
+                    RETURNING id, name
+                """, (restaurant_id,))
+
+                restaurant = cur.fetchone()
+
+                if not restaurant:
+                    return jsonify({
+                        "success": False,
+                        "message": "Restoran topilmadi"
+                    }), 404
+
+                conn.commit()
+
+        return jsonify({
+            "success": True,
+            "message": "Restoran rad etildi",
+            "restaurant": {
+                "id": restaurant[0],
+                "name": restaurant[1]
+            }
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/admin/food/restaurants/<int:restaurant_id>/open", methods=["POST"])
+@admin_required
+def admin_food_restaurant_open(restaurant_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        is_open = bool(data.get("is_open", False))
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE uzmarket.food_restaurants
+                    SET is_open = %s
+                    WHERE id = %s
+                      AND approved = TRUE
+                    RETURNING id, name, is_open
+                """, (is_open, restaurant_id))
+
+                restaurant = cur.fetchone()
+
+                if not restaurant:
+                    return jsonify({
+                        "success": False,
+                        "message": "Tasdiqlangan restoran topilmadi"
+                    }), 404
+
+                conn.commit()
+
+        return jsonify({
+            "success": True,
+            "restaurant": {
+                "id": restaurant[0],
+                "name": restaurant[1],
+                "is_open": restaurant[2]
+            }
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+# =========================================================
+# WEB FRONTEND
+# =========================================================
+
+from flask import send_from_directory
+
+@app.route("/web")
+def web_home():
+    return send_from_directory("web", "index.html")
+
+@app.route("/web/<path:filename>")
+def web_files(filename):
+    return send_from_directory("web", filename)
+
 if __name__ == "__main__":
     init_db()
     app.run(

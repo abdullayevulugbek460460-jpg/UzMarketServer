@@ -174,6 +174,19 @@ def init_db():
             """)
 
             # =====================================================
+            # ORDER LOCATION
+            # =====================================================
+            cur.execute("""
+                ALTER TABLE uzmarket.orders
+                ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION
+            """)
+
+            cur.execute("""
+                ALTER TABLE uzmarket.orders
+                ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION
+            """)
+
+            # =====================================================
             # ORDERS SELLER MIGRATION
             # =====================================================
             cur.execute("""
@@ -240,6 +253,114 @@ def init_db():
                     VALUES (%s)
                     ON CONFLICT (name) DO NOTHING
                 """, (city,))
+
+
+            # =====================================================
+            # FOOD DELIVERY
+            # =====================================================
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS uzmarket.food_restaurants (
+                    id BIGSERIAL PRIMARY KEY,
+                    owner_id BIGINT REFERENCES uzmarket.users(id),
+                    name TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    address TEXT DEFAULT '',
+                    city TEXT DEFAULT '',
+                    description TEXT DEFAULT '',
+                    logo TEXT DEFAULT '',
+                    delivery_price INTEGER DEFAULT 0,
+                    min_order INTEGER DEFAULT 0,
+                    is_open BOOLEAN DEFAULT FALSE,
+                    approved BOOLEAN DEFAULT FALSE,
+                    active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS uzmarket.food_categories (
+                    id BIGSERIAL PRIMARY KEY,
+                    restaurant_id BIGINT
+                        REFERENCES uzmarket.food_restaurants(id)
+                        ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    emoji TEXT DEFAULT '🍽️',
+                    active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(restaurant_id, name)
+                )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS uzmarket.food_menu (
+                    id BIGSERIAL PRIMARY KEY,
+                    restaurant_id BIGINT
+                        REFERENCES uzmarket.food_restaurants(id)
+                        ON DELETE CASCADE,
+                    category_id BIGINT
+                        REFERENCES uzmarket.food_categories(id)
+                        ON DELETE SET NULL,
+                    name TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    price INTEGER NOT NULL,
+                    image TEXT DEFAULT '',
+                    available BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS uzmarket.food_orders (
+                    id BIGSERIAL PRIMARY KEY,
+                    order_code TEXT UNIQUE NOT NULL,
+                    user_id BIGINT REFERENCES uzmarket.users(id),
+                    restaurant_id BIGINT
+                        REFERENCES uzmarket.food_restaurants(id),
+                    customer_name TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    latitude DOUBLE PRECISION,
+                    longitude DOUBLE PRECISION,
+                    subtotal INTEGER NOT NULL DEFAULT 0,
+                    delivery_price INTEGER NOT NULL DEFAULT 0,
+                    total INTEGER NOT NULL DEFAULT 0,
+                    status TEXT DEFAULT 'Yangi',
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ
+                )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS uzmarket.food_order_items (
+                    id BIGSERIAL PRIMARY KEY,
+                    order_id BIGINT
+                        REFERENCES uzmarket.food_orders(id)
+                        ON DELETE CASCADE,
+                    menu_id BIGINT
+                        REFERENCES uzmarket.food_menu(id),
+                    name TEXT NOT NULL,
+                    price INTEGER NOT NULL,
+                    quantity INTEGER NOT NULL DEFAULT 1,
+                    total INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+
+            # Default food categories
+            food_categories = [
+                ("🍔", "Burger"),
+                ("🍕", "Pitsa"),
+                ("🌯", "Lavash"),
+                ("🍗", "Fast-food"),
+                ("🍲", "Milliy taomlar"),
+                ("🥗", "Salatlar"),
+                ("🍟", "Fri va gazaklar"),
+                ("🥤", "Ichimliklar")
+            ]
+
+            # Categories are created per restaurant when the restaurant
+            # creates its menu. No global restaurant-specific categories
+            # are inserted here.
 
             conn.commit()
 
