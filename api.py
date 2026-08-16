@@ -529,7 +529,9 @@ def login():
                     id,
                     name,
                     phone,
-                    password_hash
+                    password_hash,
+                    role,
+                    seller_status
                 FROM uzmarket.users
                 WHERE phone = %s
             """, (phone,))
@@ -546,14 +548,24 @@ def login():
             "error": "Telefon yoki parol noto'g'ri"
         }), 401
 
-    token = make_token(user[0])
+    role = user[4] or "user"
+    seller_status = user[5]
+
+    if role == "seller" and seller_status != "APPROVED":
+        return jsonify({
+            "error": "Sotuvchi hali admin tomonidan tasdiqlanmagan"
+        }), 403
+
+    token = make_token(user[0], role)
 
     return jsonify({
         "success": True,
         "user": {
             "id": user[0],
             "name": user[1],
-            "phone": user[2]
+            "phone": user[2],
+            "role": role,
+            "seller_status": seller_status
         },
         "token": token
     })
@@ -667,8 +679,8 @@ def create_order():
                 request.user_id,
                 customer_name,
                 phone,
-                str(products),
                 address,
+                str(products),
                 total
             ))
 
@@ -960,6 +972,101 @@ def admin_login():
             "username": admin[1]
         },
         "token": token
+    })
+
+
+# =========================================================
+# ADMIN ORDERS
+# =========================================================
+
+@app.route("/admin/orders", methods=["GET"])
+@admin_required
+def admin_get_orders():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    id,
+                    order_code,
+                    user_id,
+                    customer_name,
+                    phone,
+                    address,
+                    products,
+                    total,
+                    status,
+                    created_at
+                FROM uzmarket.orders
+                ORDER BY id DESC
+            """)
+            rows = cur.fetchall()
+
+    return jsonify([
+        {
+            "id": r[0],
+            "order_code": r[1],
+            "user_id": r[2],
+            "customer_name": r[3],
+            "phone": r[4],
+            "address": r[5],
+            "products": r[6],
+            "total": r[7],
+            "status": r[8],
+            "created_at": r[9].isoformat() if r[9] else None
+        }
+        for r in rows
+    ])
+
+
+@app.route("/admin/orders/<int:order_id>/status", methods=["POST"])
+@admin_required
+def admin_update_order_status(order_id):
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status", "")).strip()
+
+    allowed = {
+        "Jarayonda",
+        "Tasdiqlandi",
+        "Tayyorlanmoqda",
+        "Yo‘lda",
+        "Yetkazildi",
+        "Bekor qilindi"
+    }
+
+    if status not in allowed:
+        return jsonify({
+            "error": "Noto‘g‘ri status",
+            "allowed": list(allowed)
+        }), 400
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE uzmarket.orders
+                SET status = %s
+                WHERE id = %s
+                RETURNING
+                    id,
+                    order_code,
+                    status
+            """, (status, order_id))
+
+            order = cur.fetchone()
+            conn.commit()
+
+    if not order:
+        return jsonify({
+            "error": "Buyurtma topilmadi"
+        }), 404
+
+    return jsonify({
+        "success": True,
+        "message": "Buyurtma statusi yangilandi",
+        "order": {
+            "id": order[0],
+            "order_code": order[1],
+            "status": order[2]
+        }
     })
 
 
@@ -1447,8 +1554,325 @@ def admin_create_banner():
 
 init_db()
 
-if __name__ == "__main__":
+# =========================================================
+# SELLER PRODUCTS
+# =========================================================
 
+def seller_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        header = request.headers.get("Authorization", "")
+
+        if not header.startswith("Bearer "):
+            return jsonify({
+                "error": "Seller Authorization kerak"
+            }), 401
+
+        token = header.replace("Bearer ", "", 1)
+
+        try:
+            data = jwt.decode(
+                token,
+                JWT_SECRET,
+                algorithms=["HS256"]
+            )
+
+            if data.get("role") != "seller":
+                return jsonify({
+                    "error": "Faqat sotuvchi uchun"
+                }), 403
+
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT id, name, phone, seller_status
+                        FROM uzmarket.users
+                        WHERE id = %s
+                          AND role = 'seller'
+                    """, (data.get("user_id"),))
+
+                    seller = cur.fetchone()
+
+            if not seller:
+                return jsonify({
+                    "error": "Sotuvchi topilmadi"
+                }), 404
+
+            if seller[3] != "APPROVED":
+                return jsonify({
+                    "error": "Sotuvchi hali admin tomonidan tasdiqlanmagan"
+                }), 403
+
+            request.seller_id = seller[0]
+            request.seller_name = seller[1]
+
+        except jwt.InvalidTokenError:
+            return jsonify({
+                "error": "Seller token noto'g'ri"
+            }), 401
+
+        return f(*args, **kwargs)
+
+    return decorated
+
+
+@app.route("/seller/products", methods=["GET"])
+@seller_required
+def seller_get_products():
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                SELECT
+                    id,
+                    name,
+                    price,
+                    old_price,
+                    emoji,
+                    category,
+                    brand,
+                    description,
+                    stock,
+                    image,
+                    active,
+                    created_at
+                FROM uzmarket.products
+                WHERE seller_id = %s
+                ORDER BY id DESC
+            """, (request.seller_id,))
+
+            rows = cur.fetchall()
+
+    return jsonify([
+        {
+            "id": r[0],
+            "name": r[1],
+            "price": r[2],
+            "old_price": r[3],
+            "emoji": r[4],
+            "category": r[5],
+            "brand": r[6],
+            "description": r[7],
+            "stock": r[8],
+            "image": r[9],
+            "active": r[10],
+            "created_at": r[11].isoformat() if r[11] else None
+        }
+        for r in rows
+    ])
+
+
+@app.route("/seller/products", methods=["POST"])
+@seller_required
+def seller_create_product():
+
+    data = request.get_json(silent=True) or {}
+
+    name = str(
+        data.get("name", "")
+    ).strip()
+
+    if not name:
+        return jsonify({
+            "error": "name kerak"
+        }), 400
+
+    try:
+        price = int(data.get("price", 0))
+        old_price = int(data.get("old_price", 0))
+        stock = int(data.get("stock", 0))
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "price, old_price yoki stock noto'g'ri"
+        }), 400
+
+    if price <= 0:
+        return jsonify({
+            "error": "price 0 dan katta bo'lishi kerak"
+        }), 400
+
+    category = str(
+        data.get("category", "Boshqa")
+    ).strip()
+
+    brand = str(
+        data.get("brand", "")
+    ).strip()
+
+    emoji = str(
+        data.get("emoji", "📦")
+    )
+
+    description = str(
+        data.get("description", "")
+    )
+
+    image = str(
+        data.get("image", "")
+    )
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                INSERT INTO uzmarket.products
+                (
+                    seller_id,
+                    name,
+                    price,
+                    old_price,
+                    emoji,
+                    category,
+                    brand,
+                    description,
+                    stock,
+                    image
+                )
+                VALUES
+                (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s
+                )
+                RETURNING id
+            """, (
+                request.seller_id,
+                name,
+                price,
+                old_price,
+                emoji,
+                category,
+                brand,
+                description,
+                stock,
+                image
+            ))
+
+            product_id = cur.fetchone()[0]
+
+            conn.commit()
+
+    return jsonify({
+        "success": True,
+        "product_id": product_id,
+        "message": "Mahsulot qo'shildi"
+    }), 201
+
+
+@app.route("/seller/products/<int:product_id>", methods=["PUT"])
+@seller_required
+def seller_update_product(product_id):
+
+    data = request.get_json(silent=True) or {}
+
+    allowed = [
+        "name",
+        "price",
+        "old_price",
+        "emoji",
+        "category",
+        "brand",
+        "description",
+        "stock",
+        "image",
+        "active"
+    ]
+
+    fields = []
+    values = []
+
+    for field in allowed:
+
+        if field in data:
+
+            fields.append(
+                field + " = %s"
+            )
+
+            values.append(
+                data[field]
+            )
+
+    if not fields:
+        return jsonify({
+            "error": "O'zgartiriladigan ma'lumot yo'q"
+        }), 400
+
+    values.append(product_id)
+    values.append(request.seller_id)
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute(
+                """
+                UPDATE uzmarket.products
+                SET
+                """ + ", ".join(fields) + """
+                WHERE id = %s
+                  AND seller_id = %s
+                RETURNING id, name
+                """,
+                tuple(values)
+            )
+
+            product = cur.fetchone()
+
+            conn.commit()
+
+    if not product:
+        return jsonify({
+            "error": "Mahsulot topilmadi yoki sizga tegishli emas"
+        }), 404
+
+    return jsonify({
+        "success": True,
+        "message": "Mahsulot yangilandi",
+        "product": {
+            "id": product[0],
+            "name": product[1]
+        }
+    })
+
+
+@app.route("/seller/products/<int:product_id>", methods=["DELETE"])
+@seller_required
+def seller_delete_product(product_id):
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                DELETE FROM uzmarket.products
+                WHERE id = %s
+                  AND seller_id = %s
+                RETURNING id
+            """, (
+                product_id,
+                request.seller_id
+            ))
+
+            product = cur.fetchone()
+
+            conn.commit()
+
+    if not product:
+        return jsonify({
+            "error": "Mahsulot topilmadi yoki sizga tegishli emas"
+        }), 404
+
+    return jsonify({
+        "success": True,
+        "message": "Mahsulot o'chirildi",
+        "product_id": product[0]
+    })
+
+
+# =========================================================
+# RUN
+# =========================================================
+if __name__ == "__main__":
+    init_db()
     app.run(
         host="0.0.0.0",
         port=PORT,

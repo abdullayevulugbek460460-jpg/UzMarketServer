@@ -9,7 +9,7 @@ def get_connection():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL sozlanmagan")
 
-    return psycopg.connect(DATABASE_URL)
+    return psycopg.connect(DATABASE_URL, prepare_threshold=None)
 
 
 def init_db():
@@ -100,6 +100,7 @@ def init_db():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS uzmarket.products (
                     id BIGSERIAL PRIMARY KEY,
+                    seller_id BIGINT REFERENCES uzmarket.users(id),
                     name TEXT NOT NULL,
                     price INTEGER NOT NULL,
                     old_price INTEGER DEFAULT 0,
@@ -112,6 +113,15 @@ def init_db():
                     active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
+            """)
+
+            # =====================================================
+            # PRODUCT SELLER
+            # =====================================================
+            cur.execute("""
+                ALTER TABLE uzmarket.products
+                ADD COLUMN IF NOT EXISTS seller_id BIGINT
+                REFERENCES uzmarket.users(id)
             """)
 
             # =====================================================
