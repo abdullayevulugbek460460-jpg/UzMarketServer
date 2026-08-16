@@ -858,16 +858,15 @@ def get_order(order_id):
 # =========================================================
 # SELLER STATISTICS
 # =========================================================
-@app.route("/seller/statistics", methods=["GET"])
-@seller_required
+
 def seller_statistics():
     period = str(request.args.get("period", "day")).strip().lower()
 
     periods = {
-        "day": ("Bugun", "CURRENT_DATE"),
-        "week": ("Bu hafta", "DATE_TRUNC('week', NOW())"),
-        "month": ("Bu oy", "DATE_TRUNC('month', NOW())"),
-        "year": ("Bu yil", "DATE_TRUNC('year', NOW())")
+        "day": ("Bugun", "created_at >= CURRENT_DATE"),
+        "week": ("Bu hafta", "created_at >= DATE_TRUNC('week', NOW())"),
+        "month": ("Bu oy", "created_at >= DATE_TRUNC('month', NOW())"),
+        "year": ("Bu yil", "created_at >= DATE_TRUNC('year', NOW())")
     }
 
     if period not in periods:
@@ -876,17 +875,10 @@ def seller_statistics():
             "allowed": ["day", "week", "month", "year"]
         }), 400
 
-    period_name, date_condition = periods[period]
-
-    # Faqat yakunlangan buyurtmalar statistikaga kiradi.
-    if period == "day":
-        condition = "created_at >= CURRENT_DATE"
-    else:
-        condition = f"created_at >= {date_condition}"
+    period_name, condition = periods[period]
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-
             cur.execute(f"""
                 SELECT
                     COALESCE(SUM(total), 0),
@@ -904,7 +896,6 @@ def seller_statistics():
             orders_count = int(row[1] or 0)
             average_order = int(row[2] or 0)
 
-            # products JSON ichidan sotilgan dona sonini hisoblaymiz
             cur.execute(f"""
                 SELECT products
                 FROM uzmarket.orders
@@ -914,29 +905,22 @@ def seller_statistics():
             """, (request.seller_id,))
 
             items_sold = 0
-
             import json
 
             for row in cur.fetchall():
                 try:
-                    products_data = row[0]
+                    data = row[0]
 
-                    if isinstance(products_data, str):
-                        products_data = json.loads(products_data)
+                    if isinstance(data, str):
+                        data = json.loads(data)
 
-                    if isinstance(products_data, dict):
-                        products_data = [products_data]
+                    if isinstance(data, dict):
+                        data = [data]
 
-                    if isinstance(products_data, list):
-                        for item in products_data:
+                    if isinstance(data, list):
+                        for item in data:
                             if isinstance(item, dict):
-                                try:
-                                    items_sold += int(
-                                        item.get("quantity", 0)
-                                    )
-                                except (TypeError, ValueError):
-                                    pass
-
+                                items_sold += int(item.get("quantity", 0) or 0)
                 except Exception:
                     pass
 
@@ -951,13 +935,11 @@ def seller_statistics():
     })
 
 
-# =========================================================
-# RUN
-# =========================================================
+@app.route("/seller/statistics", methods=["GET"])
+@seller_required
+def seller_statistics_route():
+    return seller_statistics()
 
-
-
-# =========================================================
 # ADMIN AUTH
 # =========================================================
 
@@ -1709,64 +1691,6 @@ init_db()
 # =========================================================
 # SELLER PRODUCTS
 # =========================================================
-
-def seller_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        header = request.headers.get("Authorization", "")
-
-        if not header.startswith("Bearer "):
-            return jsonify({
-                "error": "Seller Authorization kerak"
-            }), 401
-
-        token = header.replace("Bearer ", "", 1)
-
-        try:
-            data = jwt.decode(
-                token,
-                JWT_SECRET,
-                algorithms=["HS256"]
-            )
-
-            if data.get("role") != "seller":
-                return jsonify({
-                    "error": "Faqat sotuvchi uchun"
-                }), 403
-
-            with get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT id, name, phone, seller_status
-                        FROM uzmarket.users
-                        WHERE id = %s
-                          AND role = 'seller'
-                    """, (data.get("user_id"),))
-
-                    seller = cur.fetchone()
-
-            if not seller:
-                return jsonify({
-                    "error": "Sotuvchi topilmadi"
-                }), 404
-
-            if seller[3] != "APPROVED":
-                return jsonify({
-                    "error": "Sotuvchi hali admin tomonidan tasdiqlanmagan"
-                }), 403
-
-            request.seller_id = seller[0]
-            request.seller_name = seller[1]
-
-        except jwt.InvalidTokenError:
-            return jsonify({
-                "error": "Seller token noto'g'ri"
-            }), 401
-
-        return f(*args, **kwargs)
-
-    return decorated
-
 
 
 @app.route("/seller/orders", methods=["GET"])
