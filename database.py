@@ -183,6 +183,19 @@ def init_db():
             """)
 
             # =====================================================
+            # ORDER COMPLETION / STOCK MIGRATION
+            # =====================================================
+            cur.execute("""
+                ALTER TABLE uzmarket.orders
+                ADD COLUMN IF NOT EXISTS stock_deducted BOOLEAN DEFAULT FALSE
+            """)
+
+            cur.execute("""
+                ALTER TABLE uzmarket.orders
+                ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ
+            """)
+
+            # =====================================================
             # DEFAULT CATEGORIES
             # =====================================================
 

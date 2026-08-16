@@ -1740,35 +1740,275 @@ def seller_update_order_status(order_id):
 
     with get_connection() as conn:
         with conn.cursor() as cur:
+
+            # Buyurtmani lock bilan olamiz.
             cur.execute("""
-                UPDATE uzmarket.orders
-                SET status = %s
+                SELECT
+                    id,
+                    order_code,
+                    products,
+                    status,
+                    stock_deducted
+                FROM uzmarket.orders
                 WHERE id = %s
                   AND seller_id = %s
-                RETURNING id, order_code, status
-            """, (
-                status,
-                order_id,
-                request.seller_id
-            ))
+                FOR UPDATE
+            """, (order_id, request.seller_id))
 
             order = cur.fetchone()
 
-        conn.commit()
+            if not order:
+                return jsonify({
+                    "error": "Buyurtma topilmadi"
+                }), 404
 
-    if not order:
+            old_status = order[3]
+            stock_deducted = bool(order[4])
+
+            # Bekor qilingan buyurtmani qayta davom ettirmaymiz.
+            if old_status == "Bekor qilindi" and status != "Bekor qilindi":
+                return jsonify({
+                    "error": "Bekor qilingan buyurtmani davom ettirib bo'lmaydi"
+                }), 400
+
+            # Yetkazilgan buyurtmani qayta o'zgartirishni cheklaymiz.
+            if old_status == "Yetkazildi" and status != "Yetkazildi":
+                return jsonify({
+                    "error": "Yetkazilgan buyurtma yakunlangan"
+                }), 400
+
+            # ============================================
+            # YETKAZILDI -> STOCK KAMAYTIRISH
+            # ============================================
+            if status == "Yetkazildi" and not stock_deducted:
+
+                import json
+
+                raw_products = order[2]
+                items = []
+
+                try:
+                    if isinstance(raw_products, list):
+                        items = raw_products
+                    else:
+                        parsed = json.loads(raw_products)
+
+                        if isinstance(parsed, list):
+                            items = parsed
+                        elif isinstance(parsed, dict):
+                            items = parsed.get("items", [])
+                except Exception:
+                    items = []
+
+                if not items:
+                    return jsonify({
+                        "error": "Buyurtma mahsulotlari JSON formatida topilmadi"
+                    }), 400
+
+                # Avval barcha mahsulotlarni tekshiramiz.
+                for item in items:
+                    try:
+                        product_id = int(item.get("product_id", 0))
+                        quantity = int(item.get("quantity", 0))
+                    except Exception:
+                        return jsonify({
+                            "error": "Buyurtmadagi mahsulot ma'lumotlari noto'g'ri"
+                        }), 400
+
+                    if product_id <= 0 or quantity <= 0:
+                        return jsonify({
+                            "error": "product_id yoki quantity noto'g'ri"
+                        }), 400
+
+                    cur.execute("""
+                        SELECT id, name, stock
+                        FROM uzmarket.products
+                        WHERE id = %s
+                          AND seller_id = %s
+                        FOR UPDATE
+                    """, (product_id, request.seller_id))
+
+                    product = cur.fetchone()
+
+                    if not product:
+                        return jsonify({
+                            "error": f"Mahsulot topilmadi: {product_id}"
+                        }), 400
+
+                    if product[2] < quantity:
+                        return jsonify({
+                            "error": f"{product[1]} uchun qoldiq yetarli emas",
+                            "stock": product[2],
+                            "requested": quantity
+                        }), 400
+
+                # Hammasi mavjud bo'lsa stockni kamaytiramiz.
+                for item in items:
+                    product_id = int(item.get("product_id", 0))
+                    quantity = int(item.get("quantity", 0))
+
+                    cur.execute("""
+                        UPDATE uzmarket.products
+                        SET stock = stock - %s
+                        WHERE id = %s
+                          AND seller_id = %s
+                    """, (
+                        quantity,
+                        product_id,
+                        request.seller_id
+                    ))
+
+                cur.execute("""
+                    UPDATE uzmarket.orders
+                    SET
+                        status = %s,
+                        stock_deducted = TRUE,
+                        completed_at = NOW()
+                    WHERE id = %s
+                      AND seller_id = %s
+                """, (
+                    status,
+                    order_id,
+                    request.seller_id
+                ))
+
+            else:
+                cur.execute("""
+                    UPDATE uzmarket.orders
+                    SET status = %s
+                    WHERE id = %s
+                      AND seller_id = %s
+                """, (
+                    status,
+                    order_id,
+                    request.seller_id
+                ))
+
+            conn.commit()
+
+            return jsonify({
+                "success": True,
+                "order": {
+                    "id": order[0],
+                    "order_code": order[1],
+                    "old_status": old_status,
+                    "status": status,
+                    "stock_deducted": (
+                        True
+                        if status == "Yetkazildi"
+                        else stock_deducted
+                    )
+                }
+            })
+
+@app.route("/seller/statistics", methods=["GET"])
+@seller_required
+def seller_statistics():
+    period = str(
+        request.args.get("period", "day")
+    ).strip().lower()
+
+    allowed_periods = {
+        "day": "Bugun",
+        "week": "Hafta",
+        "month": "Oy",
+        "year": "Yil"
+    }
+
+    if period not in allowed_periods:
         return jsonify({
-            "error": "Buyurtma topilmadi"
-        }), 404
+            "error": "Noto'g'ri period",
+            "allowed": ["day", "week", "month", "year"]
+        }), 400
 
-    return jsonify({
-        "success": True,
-        "order": {
-            "id": order[0],
-            "order_code": order[1],
-            "status": order[2]
-        }
-    })
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            if period == "day":
+                interval = "1 day"
+
+            elif period == "week":
+                interval = "7 days"
+
+            elif period == "month":
+                interval = "1 month"
+
+            else:
+                interval = "1 year"
+
+            cur.execute("""
+                SELECT
+                    COUNT(*) AS orders_count,
+                    COALESCE(SUM(total), 0) AS total_sales,
+                    COALESCE(AVG(total), 0) AS average_order
+                FROM uzmarket.orders
+                WHERE seller_id = %s
+                  AND status = 'Yetkazildi'
+                  AND completed_at >= NOW() - (%s)::interval
+            """, (
+                request.seller_id,
+                interval
+            ))
+
+            row = cur.fetchone()
+
+            orders_count = int(row[0] or 0)
+            total_sales = int(row[1] or 0)
+            average_order = float(row[2] or 0)
+
+            # Sotilgan mahsulotlar soni
+            cur.execute("""
+                SELECT products
+                FROM uzmarket.orders
+                WHERE seller_id = %s
+                  AND status = 'Yetkazildi'
+                  AND completed_at >= NOW() - (%s)::interval
+            """, (
+                request.seller_id,
+                interval
+            ))
+
+            import json
+
+            items_sold = 0
+
+            for row2 in cur.fetchall():
+                try:
+                    raw = row2[0]
+
+                    if isinstance(raw, list):
+                        items = raw
+                    else:
+                        parsed = json.loads(raw)
+
+                        if isinstance(parsed, list):
+                            items = parsed
+                        elif isinstance(parsed, dict):
+                            items = parsed.get("items", [])
+                        else:
+                            items = []
+
+                    for item in items:
+                        try:
+                            items_sold += int(
+                                item.get("quantity", 0)
+                            )
+                        except Exception:
+                            pass
+
+                except Exception:
+                    pass
+
+            return jsonify({
+                "success": True,
+                "period": period,
+                "period_name": allowed_periods[period],
+                "total_sales": total_sales,
+                "orders_count": orders_count,
+                "items_sold": items_sold,
+                "average_order": round(average_order),
+                "currency": "UZS"
+            })
 
 @app.route("/seller/products", methods=["GET"])
 @seller_required
