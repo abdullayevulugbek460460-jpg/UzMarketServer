@@ -856,6 +856,64 @@ def get_order(order_id):
 
 
 # =========================================================
+def seller_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        header = request.headers.get("Authorization", "")
+
+        if not header.startswith("Bearer "):
+            return jsonify({
+                "error": "Seller Authorization kerak"
+            }), 401
+
+        token = header.replace("Bearer ", "", 1)
+
+        try:
+            data = jwt.decode(
+                token,
+                JWT_SECRET,
+                algorithms=["HS256"]
+            )
+
+            if data.get("role") != "seller":
+                return jsonify({
+                    "error": "Faqat sotuvchi uchun"
+                }), 403
+
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT id, name, phone, seller_status
+                        FROM uzmarket.users
+                        WHERE id = %s
+                          AND role = 'seller'
+                    """, (data.get("user_id"),))
+
+                    seller = cur.fetchone()
+
+            if not seller:
+                return jsonify({
+                    "error": "Sotuvchi topilmadi"
+                }), 404
+
+            if seller[3] != "APPROVED":
+                return jsonify({
+                    "error": "Sotuvchi hali admin tomonidan tasdiqlanmagan"
+                }), 403
+
+            request.seller_id = seller[0]
+            request.seller_name = seller[1]
+
+        except jwt.InvalidTokenError:
+            return jsonify({
+                "error": "Seller token noto'g'ri"
+            }), 401
+
+        return f(*args, **kwargs)
+
+    return decorated
+
+
 # SELLER STATISTICS
 # =========================================================
 
